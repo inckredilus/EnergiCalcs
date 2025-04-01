@@ -1,0 +1,45 @@
+# Ignorera ointressanta filer och mappar i ett projekt
+calculatePower.ipynb
+Raw2502-adjusted.csv 
+Raw2502.csv
+Raw2502-adjusted.csv Raw2502.csv
+testModules.ipynb
+
+# igonre Excel files
+*.xlsx
+*.xls
+*.xlsm
+*.xlsb
+
+# Ignore Python cache files and compiled files
+__pycache__/
+
+# Ignore node_modules folder
+node_modules/
+
+# Ignore log files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Ignore environment variable files
+.env
+.env.local
+.env.*.local
+
+# Ignore build output
+dist/
+build/
+
+# Ignore system files
+.DS_Store
+Thumbs.db
+
+# Ignore IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+*.bak
+*.tmp

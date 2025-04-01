@@ -28,20 +28,23 @@ def calculate_energy_and_power(input_file, input_sheet, output_sheet):
     df['Before Minutes'] = ((df['Start Hour'] + pd.Timedelta(hours=1)) - df['Start']).dt.total_seconds() / 60
     df['After Minutes'] = (df['End'] - (df['End Hour'] - pd.Timedelta(hours=1))).dt.total_seconds() / 60
     
-    # Fall 1: Minst två klockslag passeras
+    # Differens mellan End Hour och Start Hour
+    hour_diff = (df['End Hour'] - df['Start Hour']).dt.total_seconds() / 3600
+    
+    # Full Hour Power logik
     df['Full Hour Power'] = np.where(
-        (df['End Hour'] > df['Start Hour'] + pd.Timedelta(hours=1)),
+        hour_diff > 2,  # Fall 1: Minst två klockslag passeras
         df['Power'],
         np.where(
-            (df['End Hour'] - df['Start Hour']) == pd.Timedelta(hours=1),
-            0,  # Fall 2: Exakt ett klockslag passeras
+            hour_diff == 2,  # Fall 2: Exakt ett klockslag passeras
+            0,  
             df['Power'] * df['Duration']  # Fall 3: Hela Duration inom samma timme
         )
     )
     
-    # Fall 1 & 2: Beräkna Before och After Power
-    df['Before Power'] = np.where(df['Start Hour'] != df['End Hour'], df['Power'] * df['Before Minutes'] / 60, 0)
-    df['After Power'] = np.where(df['Start Hour'] != df['End Hour'], df['Power'] * df['After Minutes'] / 60, 0)
+    # Before Power och After Power logik
+    df['Before Power'] = np.where(hour_diff > 1, df['Power'] * df['Before Minutes'] / 60, 0)
+    df['After Power'] = np.where(hour_diff > 1, df['Power'] * df['After Minutes'] / 60, 0)
     
     # Spara till ny eller befintlig flik i Excel
     with pd.ExcelWriter(input_file, mode='a', if_sheet_exists='replace') as writer:
