@@ -1,5 +1,6 @@
 import sys
 import json
+import requests
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import List, Set
@@ -34,8 +35,9 @@ def load_charging_sessions(file_path: str, sheet_name: str = "InputData") -> tup
         print(f"✅ Alla sessioner ligger inom månaden: {year}-{month:02d}")
 
     return df, year, month
-
+#
 # Load hourly prices from JSON file
+#
 def load_hourly_prices(json_file: str) -> dict:
     """
     Loads hourly electricity prices from a JSON file.
@@ -61,6 +63,47 @@ def load_hourly_prices(json_file: str) -> dict:
 #
 # Calculate the cost of charging based on hourly prices
 #
+def fetch_monthly_prices_from_api(year: int, month: int) -> pd.DataFrame:
+    """
+    Fetches hourly electricity prices from 'Elpriset Just Nu'-API for a specific month.
+
+    :param year: The year to fetch data for (e.g. 2025)
+    :param month: The month to fetch data for (e.g. 3 for March)
+    :return: DataFrame with columns: "DateTime" and "SE3"
+    """
+    all_data = []
+
+    # Början av månaden
+    current_day = datetime(year, month, 1)
+
+    # Slutet av månaden (nästa månad minus en dag)
+    if month == 12:
+        next_month = datetime(year + 1, 1, 1)
+    else:
+        next_month = datetime(year, month + 1, 1)
+
+    while current_day < next_month:
+        date_str = current_day.strftime("%Y-%m-%d")
+        url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month:02d}-{current_day.day:02d}_SE3.json"
+
+        if _TEST:
+            print(f"Hämtar data för {date_str} från API...")
+
+        response = requests.get(url)
+        if response.status_code != 200:
+            raise Exception(f"API-fel för {date_str}: {response.status_code}")
+
+        daily_data = response.json()
+        all_data.extend(daily_data)
+        current_day += timedelta(days=1)
+
+    # Konvertera till DataFrame
+    df = pd.DataFrame(all_data)
+    df["DateTime"] = pd.to_datetime(df["time_start"])
+    df["SE3"] = df["SEK_per_kWh"]
+
+    return df[["DateTime", "SE3"]]
+
 def calculate_charging_cost(start: datetime, end: datetime, energy_kwh: float, price_data: dict) -> float:
     """
     Calculates the cost of charging an electric vehicle based on hourly prices.
