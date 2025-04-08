@@ -1,31 +1,39 @@
+import sys
 import json
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import List, Set
 
 # Read charging session data from an Excel file
-def load_charging_sessions(file_path: str, sheet_name: str = "InputData") -> pd.DataFrame:
+def load_charging_sessions(file_path: str, sheet_name: str = "InputData") -> tuple[pd.DataFrame, int, int]:
     """
-    Reads charging session data from an Excel file and extracts unique dates from the Start and End columns.
+    Reads charging session data from an Excel file and checks that all sessions belong to the same month.
 
     :param file_path: Path to the Excel file.
     :param sheet_name: Name of the worksheet to read from (default is "InputData").
-    :return: A DataFrame with columns "Consumption", "Start", and "End" and a set of unique dates.
+    :return: Tuple of (DataFrame with charging sessions, year, month)
     """
     df = pd.read_excel(file_path, sheet_name=sheet_name)
     df["Start"] = pd.to_datetime(df["Start"])
     df["End"] = pd.to_datetime(df["End"])
     df["Consumption"] = df["Consumption"].astype(float)
 
-    # Extract unique dates from 'Start' and 'End' columns
-    start_dates = df["Start"].dt.date.unique()
-    end_dates = df["End"].dt.date.unique()
-    unique_dates = set(start_dates).union(set(end_dates))
+    # Kombinera start och slutdatum till en lista av alla involverade datum
+    all_dates = pd.concat([df["Start"], df["End"]]).dt.to_period("M")
+    unique_months = all_dates.unique()
 
-    if _TEST:  
-        print(f"Unika datum: {unique_dates}")
-    
-    return df, unique_dates
+    if len(unique_months) != 1:
+        print("⚠️  Flera månader hittades i indatafilen. Programmet stöder endast en månad åt gången.")
+        print(f"Hittade månader: {list(unique_months)}")
+        sys.exit(1)
+
+    year = unique_months[0].year
+    month = unique_months[0].month
+
+    if _TEST:
+        print(f"✅ Alla sessioner ligger inom månaden: {year}-{month:02d}")
+
+    return df, year, month
 
 # Load hourly prices from JSON file
 def load_hourly_prices(json_file: str) -> dict:
@@ -122,7 +130,7 @@ def extract_unique_months(df: pd.DataFrame) -> List[datetime.date]:
 
 if __name__ == "__main__":
 
-    _TEST = True   # Sätt till True för att aktivera debugutskrift
+    _TEST = False   # Sätt till True för att aktivera debugutskrift
 
     # Test av läsning av laddsessioner
     excel_file = "laddsessioner.xlsx"
@@ -132,19 +140,19 @@ if __name__ == "__main__":
         df_sessions = load_charging_sessions(excel_file, sheet)
         print(df_sessions)
     except Exception as e:
-        print(f"Något gick fel: {e}")
+        print(f"Fel vid inläsning av laddsessioner: {e}")
+        sys.exit(1)
 
-# Test av läsning av elpriser
-#    print(load_hourly_prices("pris250324.json"))
+    if _TEST:
 
-    # Testdata
-    start_time = datetime(2025, 3, 24, 1, 30)  # exempel på starttid
-    end_time = datetime(2025, 3, 24, 3, 15)  # exempel på sluttid
-    energy = 10.0  # exempel på energi i kWh
+        # Testdata
+        start_time = datetime(2025, 3, 24, 1, 30)  # exempel på starttid
+        end_time = datetime(2025, 3, 24, 3, 15)  # exempel på sluttid
+        energy = 10.0  # exempel på energi i kWh
 
-    # Använd den tidigare definierade load_hourly_prices
-    price_data = load_hourly_prices("pris250324.json")
+        # Använd den tidigare definierade load_hourly_prices
+        price_data = load_hourly_prices("pris250324.json")
 
-    # Beräkna laddkostnaden
-    cost = calculate_charging_cost(start_time, end_time, energy, price_data)
-    print(f"Laddkostnad: {cost:.2f} SEK")
+        # Beräkna laddkostnaden
+        cost = calculate_charging_cost(start_time, end_time, energy, price_data)
+        print(f"Laddkostnad: {cost:.2f} SEK")
