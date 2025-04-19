@@ -2,11 +2,11 @@ import sys
 import json
 import requests
 import pandas as pd
-from datetime import datetime, timedelta
-from typing import List, Set
+from datetime import datetime, timedelta, timezone
+from typing import List, Set, Tuple
 
 # Read charging session data from an Excel file
-def load_charging_sessions(file_path: str, sheet_name: str = "InputData") -> tuple[pd.DataFrame, int, int]:
+def load_charging_sessions(file_path: str, sheet_name: str = "InputData") -> Tuple[pd.DataFrame, int, int]:
     """
     Reads charging session data from an Excel file and checks that all sessions belong to the same month.
 
@@ -63,77 +63,88 @@ def load_hourly_prices(json_file: str) -> dict:
 #
 # Calculate the cost of charging based on hourly prices
 #
-def fetch_monthly_prices_from_api(year: int, month: int) -> pd.DataFrame:
+def fetch_monthly_prices_from_api(year: int, month: int, elområde: str = "SE3") -> pd.DataFrame:
     """
-    Fetches hourly electricity prices from 'Elpriset Just Nu'-API for a specific month.
+    Fetches hourly electricity prices for an entire month from the 'elprisetjustnu' API.
 
-    :param year: The year to fetch data for (e.g. 2025)
-    :param month: The month to fetch data for (e.g. 3 for March)
-    :return: DataFrame with columns: "DateTime" and "SE3"
+    :param year: Year of interest (e.g., 2025).
+    :param month: Month of interest (1–12).
+    :param elområde: Electricity price area (e.g., "SE3", "SE1", "SE2", "SE4").
+    :return: A DataFrame with columns "DateTime" and the selected elområde column (e.g., "SE3").
     """
+    # Lista för att samla dagspriser
     all_data = []
 
-    # Början av månaden
-    current_day = datetime(year, month, 1)
+    # Hämta antal dagar i månaden
+    days_in_month = pd.Period(f"{year}-{month}").days_in_month
 
-    # Slutet av månaden (nästa månad minus en dag)
-    if month == 12:
-        next_month = datetime(year + 1, 1, 1)
-    else:
-        next_month = datetime(year, month + 1, 1)
+    for day in range(1, days_in_month + 1):
+        date_str = f"{month:02d}-{day:02d}"
+        url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{date_str}_{elområde}.json"
 
-    while current_day < next_month:
-        date_str = current_day.strftime("%Y-%m-%d")
-        url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month:02d}-{current_day.day:02d}_SE3.json"
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+            json_data = response.json()
+        except Exception as e:
+            print(f"Fel vid hämtning av data för {date_str}: {e}")
+            continue  # hoppa över till nästa dag
 
-        if _TEST:
-            print(f"Hämtar data för {date_str} från API...")
+        # Konvertera till DataFrame
+        df = pd.DataFrame(json_data)
+        df["DateTime"] = pd.to_datetime(df["time_start"], utc=True).dt.tz_convert("Europe/Stockholm")
+        df[elområde] = df["SEK_per_kWh"]
+        all_data.append(df[["DateTime", elområde]])
 
-        response = requests.get(url)
-        if response.status_code != 200:
-            raise Exception(f"API-fel för {date_str}: {response.status_code}")
+    if not all_data:
+        raise ValueError("Ingen data kunde hämtas från API:et.")
 
-        daily_data = response.json()
-        all_data.extend(daily_data)
-        current_day += timedelta(days=1)
-
-    # Konvertera till DataFrame
-    df = pd.DataFrame(all_data)
-    df["DateTime"] = pd.to_datetime(df["time_start"])
-    df["SE3"] = df["SEK_per_kWh"]
-
-    return df[["DateTime", "SE3"]]
-
-def calculate_charging_cost(start: datetime, end: datetime, energy_kwh: float, price_data: dict) -> float:
+    # Slå ihop allt till en enda DataFrame
+    full_df = pd.concat(all_data).sort_values("DateTime").reset_index(drop=True)
+    return full_df
+#
+# Calculate the cost of charging based on hourly prices
+#
+def calculate_charging_cost(start_time, end_time, energy_kwh, price_data):
     """
-    Calculates the cost of charging an electric vehicle based on hourly prices.
+    Calculates the cost of charging an electric vehicle over a specified time interval.
 
-    :param start: Start time of charging (datetime).
-    :param end: End time of charging (datetime).
-    :param energy_kwh: Total energy to charge (float, in kWh).
-    :param price_data: Dictionary with datetime keys and price values (SEK/kWh).
-    :return: Total cost of the charging session in SEK.
+    Parameters:
+        start_time (datetime): Local start time of the charging session.
+        end_time (datetime): Local end time of the charging session.
+        energy_kwh (float): Total energy to be charged during the session (in kWh).
+        price_data (dict): Dictionary of hourly electricity prices with keys as UTC ISO8601 strings 
+                           (e.g., '2025-03-01T01:00:00+00:00') and values as prices in SEK/kWh.
+
+    Returns:
+        float: Total cost for the charging session (rounded to 4 decimal places).
     """
+    if start_time >= end_time:
+        return 0.0
+
+    total_seconds = (end_time - start_time).total_seconds()
     total_cost = 0.0
     total_energy_check = 0.0
-    total_seconds = (end - start).total_seconds()
 
-    current = start.replace(minute=0, second=0, microsecond=0)
-    while current < end:
+    current = start_time.replace(minute=0, second=0, microsecond=0)
+
+    while current < end_time:
         next_hour = current + timedelta(hours=1)
-        period_start = max(start, current)
-        period_end = min(end, next_hour)
+        period_start = max(current, start_time)
+        period_end = min(next_hour, end_time)
+
         duration_seconds = (period_end - period_start).total_seconds()
+        energy_fraction = energy_kwh * (duration_seconds / total_seconds)
 
-        fraction = duration_seconds / total_seconds
-        energy_fraction = energy_kwh * fraction
-        total_energy_check += energy_fraction
-
-        key = current.isoformat() + "+01:00"  # Tidzon-fixad nyckel
-        price = price_data.get(key, 0)
-
+        # Match UTC time to price_data keys
+        current_utc = current.replace(tzinfo=timezone.utc)
+ #      key = current_utc.isoformat()
+        key = current_utc
+        price = price_data.get(key, 0.0)
         cost = energy_fraction * price
+
         total_cost += cost
+        total_energy_check += energy_fraction
 
         if _TEST:
             print(f"Timme: {current} -> {next_hour}")
@@ -148,7 +159,51 @@ def calculate_charging_cost(start: datetime, end: datetime, energy_kwh: float, p
         print(f"Totalt summerad energi: {total_energy_check:.5f} kWh (förväntat: {energy_kwh} kWh)")
         print(f"Total kostnad: {total_cost:.2f} SEK")
 
-    return total_cost
+    return round(total_cost, 4)
+
+#
+# Calculate the cost of charging for all sessions
+#
+def calculate_all_charging_costs(   
+    df_sessions: pd.DataFrame,
+    price_df: pd.DataFrame,
+    price_column: str = "SE3"
+) -> pd.DataFrame:
+    """
+    Calculates the charging cost for all sessions in the DataFrame using hourly electricity prices.
+
+    :param df_sessions: DataFrame with columns 'Start', 'End', and 'Consumption'
+    :param price_df: DataFrame with hourly prices. Must contain 'DateTime' and a column for the selected price zone (e.g., 'SE3')
+    :param price_column: Column name for the electricity price zone to use (default is 'SE3')
+    :return: A new DataFrame identical to df_sessions but with an extra column 'ChargingCost'
+    """
+    # Skapa en dictionary med priser för snabbare uppslag i beräkningarna
+    price_data = dict(
+        zip(
+            price_df["DateTime"],
+            price_df[price_column]
+        )
+    )
+
+    # Lista för att samla alla kostnader
+    costs = []
+
+    for index, row in df_sessions.iterrows():
+        start_time = row["Start"]
+        end_time = row["End"]
+        energy = row["Consumption"]
+
+        try:
+            cost = calculate_charging_cost(start_time, end_time, energy, price_data)
+        except Exception as e:
+            print(f"Fel vid beräkning av session på rad {index}: {e}")
+            cost = None  # eller 0.0 om du föredrar det
+
+        costs.append(cost)
+
+    # Lägg till kolumnen i den ursprungliga DataFramen
+    df_sessions["ChargingCost"] = costs
+    return df_sessions
 
 #
 # Extract unique months from the DataFrame
@@ -173,18 +228,38 @@ def extract_unique_months(df: pd.DataFrame) -> List[datetime.date]:
 
 if __name__ == "__main__":
 
-    _TEST = False   # Sätt till True för att aktivera debugutskrift
+    _TEST = True   # Sätt till True för att aktivera debugutskrift
 
     # Test av läsning av laddsessioner
     excel_file = "laddsessioner.xlsx"
     sheet = "InputData"
 
     try:
-        df_sessions = load_charging_sessions(excel_file, sheet)
-        print(df_sessions)
+        df_sessions, year, month = load_charging_sessions(excel_file, sheet)
+        df_price = fetch_monthly_prices_from_api(year, month, elområde="SE3")
+        if _TEST:
+        # Extrahera start_time, end_time och energy från första raden i df_sessions
+            first_session = df_sessions.iloc[0]  # Hämta första raden
+            start_time = first_session["Start"]
+            end_time = first_session["End"]
+            energy = first_session["Consumption"]
+
+        # Testa beräkningen för första laddsessionen
+        charging_cost = calculate_charging_cost(start_time, end_time, energy, df_price)
+        
+        # Skriv ut resultatet
+        print(f"Laddkostnad för första sessionen: {charging_cost:.2f} SEK")
+
+ #          print(df_price.head())
+ #          print(df_price.iloc[740:745][["DateTime", "SE3"]]) # Debuggning av priser
+
+   #     df_result = calculate_all_charging_costs(df_sessions, df_price, price_column="SE3")
+   #     print(df_result[["Start", "End", "Consumption", "ChargingCost"]].head())
     except Exception as e:
         print(f"Fel vid inläsning av laddsessioner: {e}")
         sys.exit(1)
+
+def old():
 
     if _TEST:
 
